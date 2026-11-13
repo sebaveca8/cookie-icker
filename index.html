@@ -2084,6 +2084,8 @@ function save(){s.saved=Date.now();try{localStorage.setItem(KEY,JSON.stringify(s
 let toastTimer;function toast(t){$('toast').textContent=t;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3700)}
 function cost(i,n=1){if(n<=0)return 0;if(s.owned[i]+n>MAX_BUILDING_OWNED)return Infinity;const raw=buildings[i][2]*Math.pow(COST_RATIO,s.owned[i])*(Math.pow(COST_RATIO,n)-1)/(COST_RATIO-1);if(!Number.isFinite(raw))return Infinity;return raw<1e15?Math.ceil(raw-1e-7):raw;}
 function countBuy(i){const rem=Math.max(0,MAX_BUILDING_OWNED-s.owned[i]);if(qty!=='max')return Math.min(qty,rem);if(rem<=0||s.balance<=0)return 0;const logRatio=Math.log10(COST_RATIO);const logTerm=Math.log10(s.balance)+Math.log10(COST_RATIO-1)-Math.log10(buildings[i][2])-s.owned[i]*logRatio;let n;if(logTerm>15)n=Math.floor(logTerm/logRatio);else{const term=Math.pow(10,logTerm);n=term>0?Math.floor(Math.log10(1+term)/logRatio):0;}n=Math.max(0,Math.min(rem,n));while(n>0&&cost(i,n)>s.balance+1e-8)n--;while(n<rem&&cost(i,n+1)<=s.balance+1e-8)n++;return n;}
+function prestigeUpgradeMul(){if(s.prestiges<=0&&s.stars<=0)return 1;const starMul=1+s.stars*STAR_BONUS,pMul=Math.pow(2.5,Math.min(100,Math.max(1,s.prestiges))),raw=Math.pow(starMul,1.35)*pMul;return Number.isFinite(raw)?Math.min(1e140,raw):1e140;}
+function upgradeCost(i,boughtCount=s.upgrades.length){const base=upgrades[i][3],scale=prestigeUpgradeMul()*Math.pow(1.22,boughtCount),raw=base*scale;if(!Number.isFinite(raw))return 1e305;return raw<1e15?Math.ceil(raw-1e-7):Math.min(1e305,raw);}
 
 function ensureShop(){
   if(shopEls)return;
@@ -2131,12 +2133,19 @@ function shop(){
 
 const UPG_TAG={click:['click','Klikání'],auto:['auto','Produkce'],gold:['gold','Zlatý bonus'],passive:['passive','Pasivní']};
 function getAffordableUpgrades(){
-  return upgrades.map((u,i)=>({u,i})).filter(x=>!s.upgrades.includes(x.i)&&s.balance>=x.u[3]);
+  const unbought=upgrades.map((u,i)=>({u,i})).filter(x=>!s.upgrades.includes(x.i)).sort((a,b)=>a.u[3]-b.u[3]);
+  let rem=s.balance,cnt=s.upgrades.length;
+  const ready=[];
+  for(const x of unbought){
+    const c=upgradeCost(x.i,cnt);
+    if(rem>=c){ready.push(x);rem-=c;cnt++;}
+  }
+  return ready;
 }
-function upgradeMatchesFilter(u,bought){
+function upgradeMatchesFilter(u,bought,i){
   if(upgFilter==='all')return true;
   if(upgFilter==='purchased')return bought;
-  if(upgFilter==='affordable')return !bought&&s.balance>=u[3];
+  if(upgFilter==='affordable')return !bought&&s.balance>=upgradeCost(i);
   if(upgFilter==='click')return u[4]==='click'||u[4]==='passive';
   return u[4]===upgFilter;
 }
@@ -2145,14 +2154,22 @@ function updateTabInPlace(){
   if(tab==='upgrades'){
     let visible=0;
     document.querySelectorAll('#tabContent .upgrade[data-upg-idx]').forEach(card=>{
-      const i=+card.dataset.upgIdx,u=upgrades[i],bought=s.upgrades.includes(i),can=s.balance>=u[3];
+      const i=+card.dataset.upgIdx,u=upgrades[i],bought=s.upgrades.includes(i),c=upgradeCost(i),can=s.balance>=c;
       card.classList.toggle('affordable',!bought&&can);
       const btn=card.querySelector('[data-upgrade]');
-      if(btn)btn.disabled=bought||!can;
-      const show=upgradeMatchesFilter(u,bought);
+      if(btn){
+        btn.disabled=bought||!can;
+        if(!bought)btn.textContent='♥ '+fmt(c);
+      }
+      const show=upgradeMatchesFilter(u,bought,i);
       card.hidden=!show;
       if(show)visible++;
     });
+    const sub=$('upgSub');
+    if(sub){
+      const dynMul=prestigeUpgradeMul()*Math.pow(1.22,s.upgrades.length);
+      sub.textContent=`${s.upgrades.length} / ${upgrades.length} vylepšení aktivováno · bonusy se násobí · dynamická cena ×${prec(dynMul)}`;
+    }
     const empty=$('upgEmpty');
     if(empty)empty.hidden=visible>0;
     const buyAll=$('buyAllUpgrades');
@@ -2190,14 +2207,15 @@ function content(){
     const bought=upgrades.map((u,i)=>({u,i,bought:true})).filter(x=>s.upgrades.includes(x.i));
     const filters=[['all','Vše'],['affordable','Dostupné'],['click','Klikání'],['auto','Produkce'],['gold','Zlaté'],['purchased','Koupené']];
     html=`<div class="toolbar"><div class="filter-pills">${filters.map(([k,lbl])=>`<button class="chip ${upgFilter===k?'active':''}" data-upg-filter="${k}">${lbl}</button>`).join('')}</div><button id="buyAllUpgrades" class="buy-all-btn" ${ready.length===0?'disabled':''}>${ready.length>0?`Koupit vše dostupné (${ready.length})`:'Nic k nákupu'}</button></div>`;
-    html+=`<p style="font-size:11px;color:var(--muted);margin:0 0 12px">${s.upgrades.length} / ${upgrades.length} vylepšení aktivováno · bonusy se násobí</p>`;
+    const dynMul=prestigeUpgradeMul()*Math.pow(1.22,s.upgrades.length);
+    html+=`<p id="upgSub" style="font-size:11px;color:var(--muted);margin:0 0 12px">${s.upgrades.length} / ${upgrades.length} vylepšení aktivováno · bonusy se násobí · dynamická cena ×${prec(dynMul)}</p>`;
     let visible=0;
     html+=`<div class="card-grid">`+[...remaining,...bought].map(({u,i,bought:isBought})=>{
-      const can=!isBought&&s.balance>=u[3];
-      const show=upgradeMatchesFilter(u,isBought);
+      const c=upgradeCost(i),can=!isBought&&s.balance>=c;
+      const show=upgradeMatchesFilter(u,isBought,i);
       if(show)visible++;
       const [cls,tagName]=UPG_TAG[u[4]]||['click','Bonus'];
-      return `<div class="upgrade ${isBought?'purchased':''} ${can?'affordable':''}" data-upg-idx="${i}" ${show?'':'hidden'}><div class="upgrade-top"><span class="uicon">${u[0]}</span><div class="upgrade-info"><h3>${u[1]}</h3><p>${u[2]}</p></div></div><div class="upgrade-foot"><span class="tag ${cls}">${tagName}</span><button class="buy" data-upgrade="${i}" ${isBought||!can?'disabled':''}>${isBought?'✓ Koupeno':'♥ '+fmt(u[3])}</button></div></div>`;
+      return `<div class="upgrade ${isBought?'purchased':''} ${can?'affordable':''}" data-upg-idx="${i}" ${show?'':'hidden'}><div class="upgrade-top"><span class="uicon">${u[0]}</span><div class="upgrade-info"><h3>${u[1]}</h3><p>${u[2]}</p></div></div><div class="upgrade-foot"><span class="tag ${cls}">${tagName}</span><button class="buy" data-upgrade="${i}" ${isBought||!can?'disabled':''}>${isBought?'✓ Koupeno':'♥ '+fmt(c)}</button></div></div>`;
     }).join('')+`</div><p id="upgEmpty" class="empty-box" ${visible>0?'hidden':''}>Žádné vylepšení v tomto filtru.</p>`;
   }else if(tab==='achievements'){
     const cats=['all',...new Set(achievements.map(a=>a[3]))];
@@ -2282,11 +2300,11 @@ document.addEventListener('click',e=>{
   let b=e.target.closest('[data-building]');
   if(b){let i=+b.dataset.building,n=countBuy(i),buyN=Math.max(1,n),price=cost(i,buyN);if(n>0&&s.owned[i]+buyN<=MAX_BUILDING_OWNED&&Number.isFinite(price)&&s.balance+1e-8>=price){s.balance=Math.max(0,s.balance-price);s.owned[i]+=buyN;save();render()}return;}
   let u=e.target.closest('[data-upgrade]');
-  if(u){let i=+u.dataset.upgrade;if(!s.upgrades.includes(i)&&s.balance>=upgrades[i][3]){s.balance-=upgrades[i][3];s.upgrades.push(i);toast(upgrades[i][1]+' aktivováno ✦');save();render()}return;}
+  if(u){let i=+u.dataset.upgrade,c=upgradeCost(i);if(!s.upgrades.includes(i)&&s.balance>=c){s.balance=Math.max(0,s.balance-c);s.upgrades.push(i);toast(upgrades[i][1]+' aktivováno ✦');save();render()}return;}
   if(e.target.id==='buyAllUpgrades'){
-    const ready=getAffordableUpgrades().sort((a,b)=>a.u[3]-b.u[3]);
+    const unbought=upgrades.map((u,i)=>({u,i})).filter(x=>!s.upgrades.includes(x.i)).sort((a,b)=>a.u[3]-b.u[3]);
     let bought=0;
-    for(const item of ready){if(s.balance>=item.u[3]&&!s.upgrades.includes(item.i)){s.balance-=item.u[3];s.upgrades.push(item.i);bought++;}}
+    for(const item of unbought){const c=upgradeCost(item.i);if(s.balance>=c&&!s.upgrades.includes(item.i)){s.balance=Math.max(0,s.balance-c);s.upgrades.push(item.i);bought++;}}
     if(bought){toast(`Koupeno ${bought} vylepšení ✦`);save();render();}
     return;
   }
